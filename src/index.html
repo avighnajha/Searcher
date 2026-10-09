@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'none'">
+<title>Searcher</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><div class="brand"><span class="logo">⌕</span> SEARCHER <span class="tag">LOCAL SEARCH</span></div><div><button id="settings-toggle" title="Settings (Ctrl+,)">Settings</button><button id="close" title="Hide (Escape)">Esc</button></div></header>
+<section class="search"><span class="search-icon">⌕</span><input id="query" maxlength="1000" placeholder="Search anything on your laptop…" autocomplete="off" spellcheck="false" autofocus><kbd>F2</kbd></section>
+<nav aria-label="Search category"><button data-mode="all" class="active">All <kbd>1</kbd></button><button data-mode="apps">Apps <kbd>2</kbd></button><button data-mode="files">Files & folders <kbd>3</kbd></button><button data-mode="content">Content <kbd>4</kbd></button><span id="timing"></span></nav>
+<main id="results" role="listbox" aria-label="Search results"></main>
+<section id="settings" hidden><div class="settings-heading"><h2>Your search space</h2><button id="add-root">+ Add folder or drive</button></div><p>Files stay on this laptop. Add folders you want to search; remove ones you don't. fff respects ignore files and skips symbolic directory links.</p><div id="roots"></div><div class="setting-actions"><label><input type="checkbox" id="login"> Start Searcher when I sign in</label><button id="reindex">Reindex & refresh apps</button></div><p class="note">Content searches text and code files up to 5 MB. PDF, Office, image OCR, and cloud-only content aren't extracted. A content result shows its matching line; Enter opens the file in your default app.</p></section>
+<div id="message" role="status"></div><footer><span id="status">Starting search engine…</span><span><kbd>↑</kbd><kbd>↓</kbd> navigate <kbd>↵</kbd> open <kbd>Ctrl ↵</kbd> reveal</span></footer>
+<script src="renderer.js"></script></body></html>
