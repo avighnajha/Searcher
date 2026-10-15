@@ -6,6 +6,17 @@ const os = require('node:os');
 const rootDir = path.resolve(__dirname, '..');
 app.setPath('userData', path.join(rootDir, '.data'));
 const data = app.getPath('userData'); fs.mkdirSync(data, { recursive: true });
+function lifecycle(event, details = {}) {
+  try {
+    const file = path.join(data, 'lifecycle.log');
+    if (fs.existsSync(file) && fs.statSync(file).size > 1024 * 1024) fs.renameSync(file, `${file}.previous`);
+    fs.appendFileSync(file, JSON.stringify({ time: new Date().toISOString(), pid: process.pid, event, ...details }) + '\n');
+  } catch { /* Diagnostics must never prevent startup or shutdown. */ }
+}
+lifecycle('process-start', { version: app.getVersion(), executable: process.execPath });
+process.on('uncaughtExceptionMonitor', (error, origin) => lifecycle('uncaught-exception', { origin, error: error.stack || String(error) }));
+process.on('exit', code => lifecycle('process-exit', { code }));
+app.on('child-process-gone', (_, details) => lifecycle('child-process-gone', details));
 const configFile = path.join(data, 'settings.json');
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } }
 function saveJson(file, value) { const temp = `${file}.tmp`; fs.writeFileSync(temp, JSON.stringify(value, null, 2)); fs.renameSync(temp, file); }
@@ -50,8 +61,9 @@ async function startEngine() {
     const p = pending.get(id); if (!p) return;
     pending.delete(id); clearTimeout(p.timeout); error ? p.reject(new Error(error)) : p.resolve(value);
   });
-  current.on('error', error => { engineError = error.message; });
-  current.on('exit', () => {
+  current.on('error', error => { engineError = error.message; lifecycle('worker-error', { error: error.message }); });
+  current.on('exit', (code, signal) => {
+    lifecycle('worker-exit', { workerPid: current.pid, code, signal, expected: worker !== current || quitting });
     if (worker !== current) return;
     engineError = 'Search engine stopped. Use Reindex in settings to restart it.';
     for (const p of pending.values()) { clearTimeout(p.timeout); p.reject(new Error(engineError)); } pending.clear();
@@ -68,17 +80,20 @@ function show() {
   win.setPosition(Math.round(display.x + (display.width - 860) / 2), Math.round(display.y + display.height * 0.16));
   win.show(); win.focus(); win.webContents.send('focus-search');
 }
-if (!app.requestSingleInstanceLock()) app.quit();
+if (!app.requestSingleInstanceLock()) { lifecycle('duplicate-instance'); app.quit(); }
 else {
   app.on('second-instance', () => { if (win) show(); });
   app.whenReady().then(() => {
+    lifecycle('app-ready');
     win = new BrowserWindow({ width: 860, height: 610, show: false, frame: false, resizable: false,
       backgroundColor: '#12151c', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
     win.loadFile(path.join(__dirname, 'index.html'));
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', e => e.preventDefault());
+    win.webContents.on('render-process-gone', (_, details) => lifecycle('renderer-exit', details));
     win.on('close', e => { if (!quitting) { e.preventDefault(); win.hide(); } });
     hotkey = globalShortcut.register('F2', () => win.isVisible() && win.isFocused() ? win.hide() : show());
+    lifecycle('hotkey-registered', { shortcut: 'F2', success: hotkey });
     const image = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAEklEQVR42mNkYPj/n4ECwESJ5lEDAHjTAh8nGCpWAAAAAElFTkSuQmCC');
     tray = new Tray(image); tray.setToolTip('Searcher · F2');
     tray.setContextMenu(Menu.buildFromTemplate([{ label:'Search (F2)', click:show }, {label:'Quit Searcher',click:() => { quitting = true; app.quit(); }}]));
@@ -144,8 +159,8 @@ else {
         quitting = true; app.quit();
       }).catch(e => { fs.writeFileSync(path.join(rootDir,'smoke-report.json'),JSON.stringify({error:e.message})); quitting=true; app.quit(); });
     }
-  });
-  app.on('before-quit', () => { quitting = true; worker?.kill(); });
+  }).catch(error => { lifecycle('startup-failed', { error: error.stack || String(error) }); app.quit(); });
+  app.on('before-quit', () => { lifecycle('before-quit'); quitting = true; worker?.kill(); });
   app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => {});
 }
