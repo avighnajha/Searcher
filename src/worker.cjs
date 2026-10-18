@@ -1,5 +1,6 @@
 const { Engine } = require('./engine.cjs');
 let engine;
+process.on('disconnect', () => { engine?.destroy(); process.exit(0); });
 process.on('message', async ({ id, method, args }) => {
   try {
     let value;

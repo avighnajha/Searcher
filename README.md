@@ -12,6 +12,10 @@ Requires Windows x64/ARM64 and Node.js 22.12+. Run `npm install` then `npm start
 - **Ctrl+1/2/3/4** selects All, Apps, Files & folders, or Content.
 - **Ctrl+,** opens settings: add/remove folders or drives, rebuild indexes, and opt into Windows sign-in startup.
 
+Automatic startup uses a per-user **Searcher** scheduled task. It starts a hidden supervisor at sign-in, allows operation on battery, has no runtime limit, and restarts the app after unexpected termination with a capped delay. The search worker also restarts independently after failure. Settings' startup checkbox installs/removes this task. To install it manually, run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Set-Startup.ps1` and ensure `.data/settings.json` has `launchAtLogin: true`. The old generic Electron Run entry is removed only if it points to this checkout.
+
+**Quit Searcher** deliberately stops supervision for the current session. Signing in again or manually launching Searcher resumes it. Startup runs hidden until F2 is pressed. `.data/lifecycle.log` records app/worker lifecycle and `.data/supervisor.log` records launches and restarts.
+
 ## Scope and performance
 
 Defaults cover existing personal folders, project folders, and OneDrive roots. Add other locations in Settings. It doesn't index the entire system drive by default. fff respects ignore files, skips directory symlinks and inaccessible files, and watches indexed folders for changes. OneDrive files must be available locally for content search; indexing cloud folders may cause Windows/OneDrive disk activity.

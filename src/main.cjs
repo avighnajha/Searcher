@@ -31,6 +31,13 @@ function normalizeRoots(roots) {
 let config = readJson(configFile, { roots: normalizeRoots(defaults), launchAtLogin: false });
 let win, tray, worker, ready, quitting = false, serial = 0, generation = 0;
 let pending = new Map(), allowed = new Map(), latestStatus, engineError = '', hotkey = false;
+let recoveryTimer, stableTimer, workerFailures = 0;
+function recoverEngine() {
+  if (quitting || recoveryTimer) return;
+  const delay = Math.min(30000, 1000 * 2 ** Math.min(workerFailures++, 5));
+  lifecycle('worker-restart-scheduled', { delay });
+  recoveryTimer = setTimeout(() => { recoveryTimer = null; if (!quitting) launchEngine(); }, delay);
+}
 function call(method, ...args) {
   return new Promise((resolve,reject) => {
     const id = ++serial;
@@ -67,6 +74,7 @@ async function startEngine() {
     if (worker !== current) return;
     engineError = 'Search engine stopped. Use Reindex in settings to restart it.';
     for (const p of pending.values()) { clearTimeout(p.timeout); p.reject(new Error(engineError)); } pending.clear();
+    if (!quitting) recoverEngine();
   });
   const apps = await loadApps();
   if (myGeneration !== generation) return;
@@ -74,7 +82,14 @@ async function startEngine() {
     readJson(path.join(data, 'usage.json'), {}));
   return latestStatus;
 }
-function launchEngine() { ready = startEngine(); ready.catch(e => { engineError = e.message; }); }
+function launchEngine() {
+  clearTimeout(recoveryTimer); recoveryTimer = null; clearTimeout(stableTimer);
+  ready = startEngine();
+  ready.then(() => {
+    lifecycle('worker-ready', { workerPid: worker?.pid });
+    stableTimer = setTimeout(() => { workerFailures = 0; }, 60000); stableTimer.unref();
+  }).catch(e => { engineError = e.message; lifecycle('worker-start-failed', { error: e.message }); recoverEngine(); });
+}
 function show() {
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   win.setPosition(Math.round(display.x + (display.width - 860) / 2), Math.round(display.y + display.height * 0.16));
@@ -82,6 +97,7 @@ function show() {
 }
 if (!app.requestSingleInstanceLock()) { lifecycle('duplicate-instance'); app.quit(); }
 else {
+  fs.rmSync(path.join(data, 'quit-requested'), { force: true });
   app.on('second-instance', () => { if (win) show(); });
   app.whenReady().then(() => {
     lifecycle('app-ready');
@@ -96,9 +112,16 @@ else {
     lifecycle('hotkey-registered', { shortcut: 'F2', success: hotkey });
     const image = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAEklEQVR42mNkYPj/n4ECwESJ5lEDAHjTAh8nGCpWAAAAAElFTkSuQmCC');
     tray = new Tray(image); tray.setToolTip('Searcher · F2');
-    tray.setContextMenu(Menu.buildFromTemplate([{ label:'Search (F2)', click:show }, {label:'Quit Searcher',click:() => { quitting = true; app.quit(); }}]));
+    tray.setContextMenu(Menu.buildFromTemplate([{ label:'Search (F2)', click:show }, {label:'Quit Searcher',click:() => {
+      lifecycle('user-quit'); fs.writeFileSync(path.join(data, 'quit-requested'), new Date().toISOString()); quitting = true; app.quit();
+    }}]));
     tray.on('click', show);
-    launchEngine(); win.once('ready-to-show', show);
+    launchEngine(); if (!process.argv.includes('--background')) win.once('ready-to-show', show);
+    if (config.launchAtLogin && process.env.SEARCHER_SMOKE !== '1') {
+      execFile('schtasks.exe',['/Run','/TN','Searcher'],{windowsHide:true},error => {
+        if (error) lifecycle('supervisor-start-failed',{error:error.message});
+      });
+    }
     ipcMain.handle('search', async (_, query, mode, cursors) => {
       if (typeof query !== 'string' || query.length > 1000 || !['all','apps','files','content'].includes(mode)) throw new Error('Invalid search');
       await ready;
@@ -130,8 +153,18 @@ else {
         if (!result.canceled) config.roots = normalizeRoots([...config.roots, ...result.filePaths]);
       } else if (action === 'remove') config.roots = config.roots.filter(p => p !== value);
       else if (action === 'login') {
+        const previous = config.launchAtLogin;
         config.launchAtLogin = !!value;
-        app.setLoginItemSettings({ openAtLogin: config.launchAtLogin, path: process.execPath, args: [rootDir] });
+        saveJson(configFile, config);
+        try {
+          await new Promise((resolve,reject) => execFile('powershell.exe', [
+            '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(rootDir,'scripts','Set-Startup.ps1'),
+            ...(config.launchAtLogin ? [] : ['-Disable'])
+          ], { windowsHide:true, timeout:30000 }, (error,stdout,stderr) => error ? reject(new Error(stderr || error.message)) : resolve()));
+          if (config.launchAtLogin) execFile('schtasks.exe',['/Run','/TN','Searcher'],{windowsHide:true},error => {
+            if (error) lifecycle('supervisor-start-failed',{error:error.message});
+          });
+        } catch(error) { config.launchAtLogin = previous; saveJson(configFile,config); throw error; }
       } else if (action !== 'reindex') throw new Error('Invalid settings action');
       saveJson(configFile, config);
       if (action !== 'login') launchEngine();
@@ -160,7 +193,7 @@ else {
       }).catch(e => { fs.writeFileSync(path.join(rootDir,'smoke-report.json'),JSON.stringify({error:e.message})); quitting=true; app.quit(); });
     }
   }).catch(error => { lifecycle('startup-failed', { error: error.stack || String(error) }); app.quit(); });
-  app.on('before-quit', () => { lifecycle('before-quit'); quitting = true; worker?.kill(); });
+  app.on('before-quit', () => { lifecycle('before-quit'); quitting = true; clearTimeout(recoveryTimer); clearTimeout(stableTimer); worker?.kill(); });
   app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => {});
 }
